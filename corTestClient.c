@@ -1,5 +1,5 @@
 //
-// FILE            ftClient.c
+// FILE            corTestClient.c
 //
 // AUTHOR          Ken Zangelin
 //
@@ -61,7 +61,7 @@ static int     probeCount    = 0;        // sourceIdentity discovery probes seen
 //
 // dumpMutex - guards dumpArray + dumpCount, on every path that touches them.
 //
-// ftClient is thread-per-connection, so two notifications in flight at once run
+// corTestClient is thread-per-connection, so two notifications in flight at once run
 // dumpAccumulate on two threads and spliced into the same tail unguarded: the
 // order of the two entries flipped, and one of them could be lost outright.
 // GET /dump rendered the list while it was being appended to, and DELETE /dump
@@ -79,7 +79,7 @@ static pthread_mutex_t dumpMutex = PTHREAD_MUTEX_INITIALIZER;
 //
 // Programmable response stubs (the mock-reply API)
 //
-// A test POSTs to /mock/reply to program how ftClient answers a forwarded
+// A test POSTs to /mock/reply to program how corTestClient answers a forwarded
 // request — { "verb": "POST", "path": "/attrs/", "status": 207, "body": {...} }.
 // On each forwarded request the stub list is consulted (verb match + path
 // substring); the first match's status + body is served, else the --status
@@ -122,7 +122,7 @@ static volatile bool ftMqttSubscribed = false;
 //
 // The connect loop used to be unbounded ("try forever, the broker may not be up
 // yet"), which is right for a broker that is merely slow and wrong for one that
-// is never coming: ftClient span silently, printed nothing, and the only symptom
+// is never coming: corTestClient span silently, printed nothing, and the only symptom
 // was a readiness barrier timing out with an EMPTY log to show for it. A bounded
 // retry that says why is strictly better - the failure is reported by the process
 // that actually observed it.
@@ -145,10 +145,10 @@ char*          ftHttpsCert  = NULL;    // path to a PEM certificate  (enables TL
 //
 // Bridge hosting.
 //
-// ftClient loads the SAME plugin the broker loads, rather than speaking a
+// corTestClient loads the SAME plugin the broker loads, rather than speaking a
 // transport of its own. Two reasons, and the second is the better one:
 //
-//   the plugin is C++ and links 21 MiB of transport libraries, and ftClient is
+//   the plugin is C++ and links 21 MiB of transport libraries, and corTestClient is
 //   built inside PROJECT(coraine C) - linking that here would put a C++
 //   compiler and the whole eProsima stack into coraine's own build tree, which
 //   is exactly what the plugin architecture exists to avoid.
@@ -157,7 +157,7 @@ char*          ftHttpsCert  = NULL;    // path to a PEM certificate  (enables TL
 //   actual plugin works. A second, independently written client can be wrong
 //   in its own way and agree with nothing.
 //
-// So ftClient is a bridge HOST: it supplies its own BridgeBroker, whose
+// So corTestClient is a bridge HOST: it supplies its own BridgeBroker, whose
 // sampleIn records into the dump instead of writing an entity.
 //
 char*         ftBridges      = NULL;   // comma-separated bridge plugins to load
@@ -228,7 +228,7 @@ static void dumpDrain(void)
 // ⚠ A PLUGIN THREAD. The entry is built with the malloc allocator, like every
 // other dump entry, so it outlives whatever the transport is about to reuse.
 //
-// This is the whole of ftClient's side of the seam: the broker's
+// This is the whole of corTestClient's side of the seam: the broker's
 // implementation stores an attribute, this one writes down that the value
 // arrived. Same contract, different job, which is the point of the contract
 // being about endpoints and bytes rather than entities.
@@ -272,9 +272,9 @@ static BridgeDriver* ftBridgeDriverLookup(const char* alias);
 //
 // Canned service replies.
 //
-// ⭐ ftClient IS THE PEER, and a peer to a service has to have an answer.
+// ⭐ corTestClient IS THE PEER, and a peer to a service has to have an answer.
 // Computing one is exactly what a context broker cannot do and what a test must
-// not have to do either, so the answer is told to ftClient in advance: the test
+// not have to do either, so the answer is told to corTestClient in advance: the test
 // says "when somebody asks this service, say that", then makes the broker ask.
 //
 // Which also keeps the assertion where it belongs. What the test is checking is
@@ -367,7 +367,7 @@ static int ftBridgeServiceRequest(const char* bridgeName,
 
   if (reply == NULL)
   {
-    COR_W("ftClient: asked on '%s' with no answer set - the request stands unanswered", endpoint);
+    COR_W("corTestClient: asked on '%s' with no answer set - the request stands unanswered", endpoint);
     return BRIDGE_OK;
   }
 
@@ -377,9 +377,9 @@ static int ftBridgeServiceRequest(const char* bridgeName,
   if ((serverP != NULL) && (serverP->serviceReply != NULL))
   {
     if (serverP->serviceReply(endpoint, requestId, reply) != BRIDGE_OK)
-      COR_W("ftClient: could not answer on '%s'", endpoint);
+      COR_W("corTestClient: could not answer on '%s'", endpoint);
     else
-      COR_T(1, "ftClient: answered on '%s' with %s", endpoint, reply);
+      COR_T(1, "corTestClient: answered on '%s' with %s", endpoint, reply);
   }
 
   free(reply);
@@ -414,7 +414,7 @@ static void ftBridgeLog(int severity, const char* fileName, int lineNo, const ch
 //
 // ftBridgeQualifiedIn - a reply, or anything else that is not a plain sample
 //
-// ftClient hosts the plugin as the broker does, so it is offered the same
+// corTestClient hosts the plugin as the broker does, so it is offered the same
 // arrivals. It writes them down with their qualifiers, which is what lets a
 // test tell "the answer came back" from "a value arrived".
 //
@@ -485,7 +485,7 @@ static BridgeDriver* ftBridgeDriverLookup(const char* alias)
 //
 // ftBridgeTopicsCarry - subscribe to every endpoint named in the config file
 //
-// The same file the broker reads. ftClient has no Channels and does not want
+// The same file the broker reads. corTestClient has no Channels and does not want
 // any - it is the peer on the other end of the wire, not a second broker - but
 // it does need to know which endpoints to listen on, and the file already says.
 //
@@ -528,11 +528,11 @@ static void ftBridgeTopicsCarry(BridgeDriver* driverP, const char* configFile)
   for (CorNode* entryP = (topicsP != NULL) ? topicsP->value.head : NULL; entryP != NULL; entryP = entryP->next)
   {
     //
-    // BOTH directions: ftClient stands in for whatever is at the far end, and
+    // BOTH directions: corTestClient stands in for whatever is at the far end, and
     // the far end both publishes and listens.
     //
     if (driverP->channelAdd(entryP->name, BridgeChannelTopic, BridgeDirectionBoth) != BRIDGE_OK)
-      COR_W("ftClient: bridge '%s' would not carry '%s'", driverP->alias, entryP->name);
+      COR_W("corTestClient: bridge '%s' would not carry '%s'", driverP->alias, entryP->name);
   }
 
   //
@@ -541,19 +541,19 @@ static void ftBridgeTopicsCarry(BridgeDriver* driverP, const char* configFile)
   // A topic is carried; a service is SERVED. The broker reads these same
   // entries and becomes the client of each - it is the only thing it can be -
   // so for the exchange to exist at all, something has to be the server, and
-  // that is what ftClient is for. Without it there is nothing on the domain to
+  // that is what corTestClient is for. Without it there is nothing on the domain to
   // answer and a service test could only ever assert that nothing happened.
   //
   const BridgeServer* serverP = (driverP->serverIface != NULL) ? driverP->serverIface() : NULL;
 
   if ((servicesP != NULL) && ((serverP == NULL) || (serverP->serviceServe == NULL)))
-    COR_W("ftClient: bridge '%s' has services configured but cannot serve them", driverP->alias);
+    COR_W("corTestClient: bridge '%s' has services configured but cannot serve them", driverP->alias);
   else if (servicesP != NULL)
   {
     for (CorNode* entryP = servicesP->value.head; entryP != NULL; entryP = entryP->next)
     {
       if (serverP->serviceServe(entryP->name, ftBridgeServiceRequest) != BRIDGE_OK)
-        COR_W("ftClient: bridge '%s' would not serve '%s'", driverP->alias, entryP->name);
+        COR_W("corTestClient: bridge '%s' would not serve '%s'", driverP->alias, entryP->name);
     }
   }
 
@@ -591,7 +591,7 @@ static void ftBridgesLoad(void)
 
     if (registerFunc == NULL)
     {
-      COR_X(1, "ftClient: bridge plugin '%s' (%s): %s", token, path, openErr);
+      COR_X(1, "corTestClient: bridge plugin '%s' (%s): %s", token, path, openErr);
       return;
     }
 
@@ -610,11 +610,11 @@ static void ftBridgesLoad(void)
     ++ftBridgeCount;
 
     if ((driverP->init != NULL) && (driverP->init(ftBridgeConfig, &ftBridgeBroker) != BRIDGE_OK))
-      COR_X(1, "ftClient: init failed for bridge '%s'", token);
+      COR_X(1, "corTestClient: init failed for bridge '%s'", token);
 
     ftBridgeTopicsCarry(driverP, ftBridgeConfig);
 
-    COR_I("ftClient: hosting bridge '%s'", (driverP->alias != NULL) ? driverP->alias : token);
+    COR_I("corTestClient: hosting bridge '%s'", (driverP->alias != NULL) ? driverP->alias : token);
 
     token = strtok_r(NULL, ",", &saveptr);
   }
@@ -1037,7 +1037,7 @@ static bool postAccumulate(void)
     snprintf(errBuf, sizeof(errBuf),
              "{\"type\":\"https://uri.etsi.org/ngsi-ld/errors/InternalError\","
              "\"title\":\"Mock Error\","
-             "\"detail\":\"ftClient configured with --status %u\"}", ftPostStatus);
+             "\"detail\":\"corTestClient configured with --status %u\"}", ftPostStatus);
     corRest.out.payload     = errBuf;
     corRest.out.payloadSize = strlen(errBuf);
   }
@@ -1097,7 +1097,7 @@ static bool getAccumulate(void)
     snprintf(errBuf, sizeof(errBuf),
              "{\"type\":\"https://uri.etsi.org/ngsi-ld/errors/InternalError\","
              "\"title\":\"Mock Error\","
-             "\"detail\":\"ftClient configured with --status %u\"}", ftPostStatus);
+             "\"detail\":\"corTestClient configured with --status %u\"}", ftPostStatus);
     corRest.out.payload     = errBuf;
     corRest.out.payloadSize = strlen(errBuf);
   }
@@ -1128,7 +1128,7 @@ static void mqttOnConnect(struct mosquitto* m, void* ud, int rc)
   //
   if (rc != 0)
   {
-    fprintf(stderr, "ftClient: MQTT broker on port %d refused the connection: %s\n",
+    fprintf(stderr, "corTestClient: MQTT broker on port %d refused the connection: %s\n",
             ftMqttPort, mosquitto_connack_string(rc));
     fflush(stderr);
     ftMqttFailed = true;
@@ -1223,7 +1223,7 @@ static void* mqttListenerThread(void* arg)
 
   if (rc != MOSQ_ERR_SUCCESS)
   {
-    fprintf(stderr, "ftClient: no MQTT broker on port %d after 5s: %s\n",
+    fprintf(stderr, "corTestClient: no MQTT broker on port %d after 5s: %s\n",
             ftMqttPort, mosquitto_strerror(rc));
     fflush(stderr);
     ftMqttFailed = true;
@@ -1249,7 +1249,7 @@ static void* mqttListenerThread(void* arg)
 //
 // Body: { "endpoint": "add_two_ints", "payload": <any json> }
 //
-// What ftClient will answer when the broker asks that service. Set before the
+// What corTestClient will answer when the broker asks that service. Set before the
 // broker is made to ask; replacing it replaces the answer.
 //
 static bool postBridgeServiceReply(void)
@@ -1318,7 +1318,7 @@ static bool postBridgeServiceReply(void)
 
   pthread_mutex_unlock(&ftServiceMutex);
 
-  COR_T(1, "ftClient: '%s' will be answered with %s", endpointP->value.s, rendered);
+  COR_T(1, "corTestClient: '%s' will be answered with %s", endpointP->value.s, rendered);
 
   corRest.out.httpStatusCode = 204;
 
@@ -1399,7 +1399,7 @@ static CorRestServiceSimplified ftServices[] =
   { CorVerbPost,   "/bridge/serviceReply", postBridgeServiceReply, ~(uint64_t)0, 0 },
   { CorVerbDelete, "/mock/reply", deleteMockReply, 0,                  0 },
   // Catch-all accumulators — every verb lands here and honors --status.
-  // supportedParams = ~0ULL: ftClient mocks any NGSI-LD endpoint and
+  // supportedParams = ~0ULL: corTestClient mocks any NGSI-LD endpoint and
   // must accept whatever URL params the broker forwards, without 400ing.
   { CorVerbGet,    "/**",    getAccumulate,   ~(uint64_t)0,            0 },
   { CorVerbPost,   "/**",    postAccumulate,  ~(uint64_t)0,            0 },
@@ -1424,7 +1424,7 @@ static char* pemSlurp(const char* path)
   FILE* f = fopen(path, "rb");
   if (f == NULL)
   {
-    fprintf(stderr, "ftClient: cannot open '%s'\n", path);
+    fprintf(stderr, "corTestClient: cannot open '%s'\n", path);
     return NULL;
   }
 
@@ -1434,7 +1434,7 @@ static char* pemSlurp(const char* path)
 
   if ((size <= 0) || (size > 64 * 1024))
   {
-    fprintf(stderr, "ftClient: '%s' has unreasonable size %ld\n", path, size);
+    fprintf(stderr, "corTestClient: '%s' has unreasonable size %ld\n", path, size);
     fclose(f);
     return NULL;
   }
@@ -1445,7 +1445,7 @@ static char* pemSlurp(const char* path)
 
   if (n != (size_t) size)
   {
-    fprintf(stderr, "ftClient: short read on '%s'\n", path);
+    fprintf(stderr, "corTestClient: short read on '%s'\n", path);
     free(buf);
     return NULL;
   }
@@ -1465,7 +1465,7 @@ int main(int argC, char* argV[])
   char* progName = strrchr(argV[0], '/');
   progName = (progName != NULL) ? progName + 1 : argV[0];
 
-  CorArgsStatus ks = corArgsInit(progName, ftArgV, "FTCLIENT");
+  CorArgsStatus ks = corArgsInit(progName, ftArgV, "CORTESTCLIENT");
   if (ks != CorArgsOk)
   {
     fprintf(stderr, "corArgsInit failed\n");
@@ -1479,7 +1479,7 @@ int main(int argC, char* argV[])
     return 1;
   }
 
-  if (corLogInit("ftClient", "/tmp", false, NULL, "0-255", corArgsBuiltinVerbose, corArgsBuiltinDebug, false) != 0)
+  if (corLogInit("corTestClient", "/tmp", false, NULL, "0-255", corArgsBuiltinVerbose, corArgsBuiltinDebug, false) != 0)
   {
     fprintf(stderr, "corLogInit failed\n");
     return 1;
@@ -1492,7 +1492,7 @@ int main(int argC, char* argV[])
 
   corRestSetPrettySpaces(2);
 
-  // ftClient is a notification RECEIVER — accept geo+json notifications (the
+  // corTestClient is a notification RECEIVER — accept geo+json notifications (the
   // broker's § 6.3.4 415 gate otherwise rejects a geo+json POST body).
   corRestAcceptGeoJsonInputSet(true);
 
@@ -1506,7 +1506,7 @@ int main(int argC, char* argV[])
       return 1;
 
     corRestHttpsServerCredentialsSet(keyPem, certPem);
-    COR_I("ftClient serving HTTPS on port %u", ftPort);
+    COR_I("corTestClient serving HTTPS on port %u", ftPort);
   }
 
   //
@@ -1517,7 +1517,7 @@ int main(int argC, char* argV[])
 
   if (corRestInit(ftServices, ftServiceCount, ftPort, 2) != 0)
   {
-    fprintf(stderr, "ftClient: corRestInit failed on port %u\n", ftPort);
+    fprintf(stderr, "corTestClient: corRestInit failed on port %u\n", ftPort);
     return 1;
   }
 
@@ -1526,14 +1526,14 @@ int main(int argC, char* argV[])
     pthread_t tid;
     if (pthread_create(&tid, NULL, mqttListenerThread, NULL) != 0)
     {
-      fprintf(stderr, "ftClient: failed to start MQTT listener thread\n");
+      fprintf(stderr, "corTestClient: failed to start MQTT listener thread\n");
       return 1;
     }
     pthread_detach(tid);
-    COR_I("ftClient MQTT listener: localhost:%u topic='%s'", ftMqttPort, ftMqttTopic);
+    COR_I("corTestClient MQTT listener: localhost:%u topic='%s'", ftMqttPort, ftMqttTopic);
   }
 
-  COR_I("ftClient running on port %u", ftPort);
+  COR_I("corTestClient running on port %u", ftPort);
 
   while (1)
     pause();
