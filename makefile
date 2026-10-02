@@ -12,6 +12,9 @@
 #   corRequest      a cor:// client - one request, like curl -i, or load, like wrk
 #   corTestClient   the other end of a test: a notification receiver, a mock context source, an MQTT
 #                   subscriber, and a host for the broker's bridge plugins (the peer a bridge talks to)
+#   corMongoDrop    drop MongoDB databases or collections - what the functests did with mongosh, in
+#                   ~8 ms instead of ~0.3 s. Built where libmongoc is (pkg-config mongoc2); skipped
+#                   elsewhere, as nothing but a mongoc test run needs it
 #
 # They sit at the top of the stack - corRequest speaks NGSI-LD's cor:// codec (corNgsild), and
 # corTestClient serves HTTP (corRest) - so corLibs builds this repo after every lib, and installs the
@@ -80,9 +83,19 @@ LIBS          = -rdynamic -Wl,--whole-archive $(COR_LIBS) -Wl,--no-whole-archive
 
 TOOLS         = corRequest corTestClient
 
+#
+# corMongoDrop: only where libmongoc is - nothing else here needs it, and a corLibs build on a machine
+# without it must not fail for a tool only a mongoc test run uses
+#
+MONGOC_FLAGS := $(shell pkg-config --cflags mongoc2 2>/dev/null)
+MONGOC_LIBS  := $(shell pkg-config --libs mongoc2 2>/dev/null)
+ifneq ($(MONGOC_LIBS),)
+TOOLS        += corMongoDrop
+endif
+
 all: $(TOOLS:%=$(OBJDIR)/%)
-	@cp -f $(OBJDIR)/corRequest    corRequest
-	@cp -f $(OBJDIR)/corTestClient corTestClient
+	@for t in $(TOOLS); do cp -f $(OBJDIR)/$$t $$t; done
+	@if [ -z "$(MONGOC_LIBS)" ]; then echo "corTools: no libmongoc (pkg-config mongoc2) - corMongoDrop not built"; fi
 
 #
 # $(OBJDIR)/.flags - rebuild when the COMPILE LINE changes
@@ -109,6 +122,10 @@ $(OBJDIR)/corRequest: $(OBJDIR)/corRequest.o $(COR_LIBS)
 #
 $(OBJDIR)/corTestClient: $(OBJDIR)/corTestClient.o $(COR_LIBS)
 	$(CC) -o $@ $< $(LIBS) -lmosquitto
+
+$(OBJDIR)/corMongoDrop: corMongoDrop.c $(OBJDIR)/.flags
+	@mkdir -p $(OBJDIR)
+	$(CC) $(CFLAGS) $(MONGOC_FLAGS) -o $@ $< $(MONGOC_LIBS)
 
 #
 # install - into bin/, where corLibs picks the tools up (corLibs/bin, beside corTest)
