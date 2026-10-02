@@ -4,7 +4,7 @@ Command line tools built on the Cor-Libs - generic: the functests use them, and 
 
 | tool | what it is |
 |---|---|
-| `corRequest` | a cor:// client: one request, like `curl -i` (`--curl` prints what corTest's `corCurl` prints), parallel requests (`--paths`), or load, like `wrk` (`-c`, `--duration`) |
+| `corRequest` | a cor:// client: one request, like `curl -i` (`--curl` prints what corTest's `corCurl` prints), parallel requests (`--paths`), or load, like `wrk` (`-c`, `--duration`) - also at a fixed rate, like `wrk2` (`--rate`: latency counted from when a request was due), and over `http://` too (load mode, GET) |
 | `corTestClient` | the other end of a test: a notification receiver (HTTP, HTTPS, MQTT), a mock context source (`--delay`, `--status`, programmed replies), and a host for the broker's bridge plugins - the peer a bridge talks to |
 | `corMongoDrop` | drop MongoDB databases or collections - by name, by prefix (`P` and `P-...`), optionally only names containing a string - in ~8 ms where `mongosh` takes ~0.3 s; what the functests drop with before almost every test. Built only where libmongoc is (`pkg-config mongoc2`) |
 

@@ -19,6 +19,14 @@
 //     <c> connections, each a thread of its own sending one request after the other for <d>
 //     seconds; prints requests/second and the p50 / p90 / p99 / max latency
 //
+//   load at a fixed rate, like wrk2:
+//     corRequest --url http://localhost:1026 --path ... -c 16 --rate 30000 --duration 8
+//     each connection sends at its share of <rate>, on a schedule; a latency counts from the moment
+//     the request was DUE, not from when it went out - a slow answer delays the requests behind it,
+//     and they count that delay. Two builds compared at one rate, instead of each at the rate it
+//     reaches (which favours the faster build's p99 against itself).
+//     An http:// URL loads an HTTP server (GET, keep-alive, Content-Length bodies) - load mode only.
+//
 // Headers: --header 'Name: value', several separated by '|'.
 //
 //   as the functests' corCurl, over cor:// instead of curl:
@@ -31,9 +39,15 @@
 //
 //   exit: 0 a response; 1 no response; 3 the payload is not JSON - a request only HTTP can carry
 //
+#define _GNU_SOURCE                                   // strcasestr
 #include <stdbool.h>                                  // bool
 #include <stdio.h>                                    // printf, fprintf
-#include <stdlib.h>                                   // malloc, free, qsort
+#include <errno.h>                                    // errno, EINTR
+#include <netdb.h>                                    // getaddrinfo
+#include <netinet/in.h>                               // IPPROTO_TCP
+#include <netinet/tcp.h>                              // TCP_NODELAY
+#include <stdlib.h>                                   // malloc, free, qsort, strtol
+#include <sys/socket.h>                               // socket, connect, setsockopt
 #include <string.h>                                   // strchr, strlen, strtok_r
 #include <time.h>                                     // clock_gettime
 #include <unistd.h>                                   // usleep
@@ -77,6 +91,7 @@ static unsigned int  timeoutMs    = 30000;
 static bool          curlMode     = false;
 static char*         bodyFile     = NULL;
 static int           pretty       = 0;
+static unsigned int  rate         = 0;
 
 static CorArg argV[] =
 {
@@ -89,6 +104,7 @@ static CorArg argV[] =
   { "--conns",   "-c", CorArgUInt,   _vp &connections, CorArgOpt, _vp 0,             _vp 0,  _vp 1024,      "load mode: connections (0: one request)" },
   { "--paths",   NULL, CorArgString, _vp &paths,       CorArgOpt, NULL,              NULL,   NULL,          "parallel mode: 'path|path|...', each sent at once, answers printed as they come" },
   { "--duration",NULL, CorArgUInt,   _vp &seconds,     CorArgOpt, _vp 8,             _vp 1,  _vp 3600,      "load mode: seconds" },
+  { "--rate",    NULL, CorArgUInt,   _vp &rate,        CorArgOpt, _vp 0,             _vp 0,  _vp 10000000,  "load mode: requests/second in all, on a schedule (0: as fast as answered)" },
   { "--timeout", NULL, CorArgUInt,   _vp &timeoutMs,   CorArgOpt, _vp 30000,         _vp 1,  _vp 600000,    "milliseconds" },
   { "--curl",    NULL, CorArgBool,   _vp &curlMode,    CorArgOpt, _vp false,         _vp false, _vp true,   "print as the functests' corCurl does (with --bodyFile)" },
   { "--bodyFile",NULL, CorArgString, _vp &bodyFile,    CorArgOpt, NULL,              NULL,   NULL,          "--curl: where the body goes" },
@@ -383,7 +399,154 @@ typedef struct Worker
   long       errors;
   double*    latV;        // microseconds
   long       latMax;
+  double     interval;    // --rate: seconds between this connection's requests; 0: none
+  int        httpFd;      // an http:// URL: this connection's socket
+  char*      httpBuf;
 } Worker;
+
+static char  httpHost[256];
+static char  httpPort[16];
+static char* httpRequest    = NULL;
+static int   httpRequestLen = 0;
+enum { HTTP_BUF = 1024 * 1024 };
+
+
+
+// -----------------------------------------------------------------------------
+//
+// httpUrl - http://host[:port]: host and port, and the request every GET sends; false: not http://
+//
+static bool httpUrl(void)
+{
+  if (strncmp(url, "http://", 7) != 0)
+    return false;
+
+  const char* hostP = url + 7;
+  const char* colon = strchr(hostP, ':');
+  const char* slash = strchr(hostP, '/');
+  int         hLen  = (int) ((colon != NULL) ? colon - hostP : (slash != NULL) ? slash - hostP : (long) strlen(hostP));
+
+  snprintf(httpHost, sizeof(httpHost), "%.*s", hLen, hostP);
+  if (colon != NULL)
+    snprintf(httpPort, sizeof(httpPort), "%ld", strtol(colon + 1, NULL, 10));
+  else
+    snprintf(httpPort, sizeof(httpPort), "80");
+
+  int size = 1024 + (int) strlen(path);
+  for (int i = 0; i < headerCount; i++)
+    size += (int) (strlen(headerV[i].key) + strlen(headerV[i].value) + 4);
+
+  httpRequest    = malloc(size);
+  httpRequestLen = snprintf(httpRequest, size, "GET %s HTTP/1.1\r\nHost: %s:%s\r\n", path, httpHost, httpPort);
+  for (int i = 0; i < headerCount; i++)
+    httpRequestLen += snprintf(httpRequest + httpRequestLen, size - httpRequestLen, "%s: %s\r\n", headerV[i].key, headerV[i].value);
+  httpRequestLen += snprintf(httpRequest + httpRequestLen, size - httpRequestLen, "\r\n");
+
+  return true;
+}
+
+
+
+// -----------------------------------------------------------------------------
+//
+// httpConnect -
+//
+static int httpConnect(void)
+{
+  struct addrinfo  hints;
+  struct addrinfo* aiP = NULL;
+
+  memset(&hints, 0, sizeof(hints));
+  hints.ai_family   = AF_INET;
+  hints.ai_socktype = SOCK_STREAM;
+
+  if (getaddrinfo(httpHost, httpPort, &hints, &aiP) != 0)
+    return -1;
+
+  int fd = socket(aiP->ai_family, aiP->ai_socktype, 0);
+
+  if ((fd >= 0) && (connect(fd, aiP->ai_addr, aiP->ai_addrlen) != 0))
+  {
+    close(fd);
+    fd = -1;
+  }
+  freeaddrinfo(aiP);
+
+  if (fd >= 0)
+  {
+    int one = 1;
+    setsockopt(fd, IPPROTO_TCP, TCP_NODELAY, &one, sizeof(one));
+  }
+
+  return fd;
+}
+
+
+
+// -----------------------------------------------------------------------------
+//
+// httpGet - one GET on the worker's connection (opened, or reopened, as needed); the status, -1: none
+//
+static int httpGet(Worker* wP)
+{
+  if ((wP->httpFd < 0) && ((wP->httpFd = httpConnect()) < 0))
+    return -1;
+
+  for (int sent = 0; sent < httpRequestLen; )
+  {
+    ssize_t n = write(wP->httpFd, httpRequest + sent, httpRequestLen - sent);
+
+    if ((n < 0) && (errno == EINTR))
+      continue;
+    if (n <= 0)
+      goto broken;
+    sent += (int) n;
+  }
+
+  int   got     = 0;
+  int   status  = -1;
+  long  total   = -1;                                // header + body, once the header is in
+
+  while ((total < 0) || (got < total))
+  {
+    if (got >= HTTP_BUF - 1)
+      goto broken;
+
+    ssize_t n = read(wP->httpFd, wP->httpBuf + got, HTTP_BUF - 1 - got);
+
+    if ((n < 0) && (errno == EINTR))
+      continue;
+    if (n <= 0)
+      goto broken;
+
+    got += (int) n;
+    wP->httpBuf[got] = 0;
+
+    if (total < 0)
+    {
+      char* end = strstr(wP->httpBuf, "\r\n\r\n");
+
+      if (end == NULL)
+        continue;
+
+      status = (int) strtol(wP->httpBuf + 9, NULL, 10);   // "HTTP/1.1 200"
+
+      long  len = 0;
+      char* clP = strcasestr(wP->httpBuf, "\r\nContent-Length:");
+      if ((clP != NULL) && (clP < end))
+        len = strtol(clP + 17, NULL, 10);
+
+      total = (end + 4 - wP->httpBuf) + len;
+    }
+  }
+
+  return status;
+
+broken:
+  close(wP->httpFd);
+  wP->httpFd = -1;
+  return -1;
+}
 
 static double now(void)
 {
@@ -403,9 +566,45 @@ static void* worker(void* arg)
 
   corAllocBufferInit(&ka, kaBuf, 64 * 1024, 64 * 1024, NULL, "corRequest load");
 
-  for (double t0 = now(); t0 < wP->endAt; t0 = now())
+  double due = now();
+
+  for (double t0 = due; t0 < wP->endAt; t0 = now())
   {
-    bool ok = corRestCorSend(url, wP->verb, path, headerV, headerCount, NULL, payload, timeoutMs, &ka, &resp, &error);
+    if (wP->interval > 0)
+    {
+      //
+      // On the schedule: wait for the request's due time, and count its latency from then - a request
+      // already late (the previous answer took longer than the interval) goes at once, its lateness
+      // counted
+      //
+      while (t0 < due)
+      {
+        struct timespec ts;
+        double          wait = due - t0;
+
+        ts.tv_sec  = (time_t) wait;
+        ts.tv_nsec = (long) ((wait - ts.tv_sec) * 1e9);
+        nanosleep(&ts, NULL);
+        t0 = now();
+      }
+
+      t0   = due;
+      due += wP->interval;
+
+      if (t0 >= wP->endAt)
+        break;
+    }
+
+    bool ok;
+
+    if (httpRequest != NULL)
+    {
+      int status = httpGet(wP);
+      ok          = (status > 0);
+      resp.status = status;
+    }
+    else
+      ok = corRestCorSend(url, wP->verb, path, headerV, headerCount, NULL, payload, timeoutMs, &ka, &resp, &error);
 
     if ((ok == true) && (resp.status < 400))
     {
@@ -444,6 +643,9 @@ static int load(CorRestVerb v)
     wV[i].endAt  = start + seconds;
     wV[i].latMax = latMax;
     wV[i].latV   = malloc(latMax * sizeof(double));
+    wV[i].httpFd   = -1;
+    wV[i].httpBuf  = (httpRequest != NULL) ? malloc(HTTP_BUF) : NULL;
+    wV[i].interval = (rate > 0) ? (double) connections / rate : 0;
     pthread_create(&wV[i].tid, NULL, worker, &wV[i]);
   }
 
@@ -468,6 +670,9 @@ static int load(CorRestVerb v)
     memcpy(&allV[n], wV[i].latV, k * sizeof(double));
     n += k;
     free(wV[i].latV);
+    free(wV[i].httpBuf);
+    if (wV[i].httpFd >= 0)
+      close(wV[i].httpFd);
   }
 
   qsort(allV, n, sizeof(double), doubleCompare);
@@ -513,6 +718,15 @@ int main(int argC, char* argV_[])
 
   if (paths != NULL)
     return parallel(v);
+
+  if (httpUrl() == true)
+  {
+    if ((connections == 0) || (v != CorVerbGet))
+    {
+      fprintf(stderr, "corRequest: an http:// URL is for load mode (-c), GET only\n");
+      return 2;
+    }
+  }
 
   if (connections > 0)
     return load(v);
