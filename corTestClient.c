@@ -167,8 +167,11 @@ static BridgeDriver  ftBridgeV[BRIDGES_MAX];
 static int           ftBridgeCount = 0;
 
 
+static char* ftTraceLevels = (char*) "0-255";
+
 static CorArg ftArgV[] =
 {
+  { "--traceLevels",     NULL,  CorArgString, _vp &ftTraceLevels, CorArgOpt, _vp "0-255", NULL, NULL,  "trace levels to log - every one by default (the functests read them); \"\" for none - a benchmark's notification receiver logs a full trace of every request otherwise" },
   { "--port",            "-p",  CorArgUShort, _vp &ftPort,   CorArgOpt, _vp 7701,  _vp 1, _vp 65535, "TCP port to listen on" },
   { "--foreground",      "-fg", CorArgBool,   _vp &ftFg,         CorArgOpt, _vp true, _vp false, _vp true, "run in foreground" },
   { "--status",          "-s",  CorArgUShort, _vp &ftPostStatus, CorArgOpt, _vp 200,   _vp 100, _vp 599, "HTTP status for accumulate POSTs (misbehave mode)" },
@@ -1479,7 +1482,7 @@ int main(int argC, char* argV[])
     return 1;
   }
 
-  if (corLogInit("corTestClient", "/tmp", false, NULL, "0-255", corArgsBuiltinVerbose, corArgsBuiltinDebug, false) != 0)
+  if (corLogInit("corTestClient", "/tmp", false, NULL, ftTraceLevels, corArgsBuiltinVerbose, corArgsBuiltinDebug, false) != 0)
   {
     fprintf(stderr, "corLogInit failed\n");
     return 1;
