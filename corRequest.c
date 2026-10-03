@@ -92,6 +92,7 @@ static bool          curlMode     = false;
 static char*         bodyFile     = NULL;
 static int           pretty       = 0;
 static unsigned int  rate         = 0;
+static unsigned int  sockets      = 0;
 
 static CorArg argV[] =
 {
@@ -104,6 +105,7 @@ static CorArg argV[] =
   { "--conns",   "-c", CorArgUInt,   _vp &connections, CorArgOpt, _vp 0,             _vp 0,  _vp 1024,      "load mode: connections (0: one request)" },
   { "--paths",   NULL, CorArgString, _vp &paths,       CorArgOpt, NULL,              NULL,   NULL,          "parallel mode: 'path|path|...', each sent at once, answers printed as they come" },
   { "--duration",NULL, CorArgUInt,   _vp &seconds,     CorArgOpt, _vp 8,             _vp 1,  _vp 3600,      "load mode: seconds" },
+  { "--sockets", NULL, CorArgUInt,   _vp &sockets,     CorArgOpt, _vp 0,             _vp 0,  _vp 1,         "parallel mode: 1 = every path on ONE connection (multiplexed), printed in the order the answers came; 0 = a thread and a connection each" },
   { "--rate",    NULL, CorArgUInt,   _vp &rate,        CorArgOpt, _vp 0,             _vp 0,  _vp 10000000,  "load mode: requests/second in all, on a schedule (0: as fast as answered)" },
   { "--timeout", NULL, CorArgUInt,   _vp &timeoutMs,   CorArgOpt, _vp 30000,         _vp 1,  _vp 600000,    "milliseconds" },
   { "--curl",    NULL, CorArgBool,   _vp &curlMode,    CorArgOpt, _vp false,         _vp false, _vp true,   "print as the functests' corCurl does (with --bodyFile)" },
@@ -362,6 +364,67 @@ static void* parallelOne(void* arg)
   return NULL;
 }
 
+// -----------------------------------------------------------------------------
+//
+// parallelOneSocket - --sockets 1: every path started on this thread - one connection, multiplexed -
+// 100 ms apart, then all waited for; printed in the order the answers ARRIVED, not the order sent
+//
+typedef struct OneSocket
+{
+  const char*         path;
+  CorRestCorCall*     callP;
+  CorRestCorResponse  resp;
+  bool                ok;
+  const char*         error;
+} OneSocket;
+
+static int parallelOneSocket(CorRestVerb v, Parallel* pV, int n)
+{
+  static char  kaBuf[64 * 1024];
+  CorAlloc     ka;
+  OneSocket    oV[32];
+
+  corAllocBufferInit(&ka, kaBuf, sizeof(kaBuf), 64 * 1024, NULL, "corRequest one socket");
+
+  for (int i = 0; i < n; i++)
+  {
+    if (i > 0)
+      usleep(100000);
+
+    oV[i].path  = pV[i].path;
+    oV[i].error = NULL;
+    oV[i].callP = corRestCorStart(url, v, pV[i].path, headerV, headerCount, NULL, payload, timeoutMs, &ka, &oV[i].error);
+  }
+
+  for (int i = 0; i < n; i++)
+  {
+    memset(&oV[i].resp, 0, sizeof(oV[i].resp));
+    oV[i].ok = (oV[i].callP != NULL) && (corRestCorWait(oV[i].callP, &oV[i].resp, &oV[i].error) == true);
+  }
+
+  for (int printed = 0; printed < n; printed++)       // the earliest arrival first; failures last, in order
+  {
+    int best = -1;
+
+    for (int i = 0; i < n; i++)
+    {
+      if (oV[i].path == NULL)
+        continue;
+      if ((best == -1) || ((oV[i].ok == true) && ((oV[best].ok == false) || (oV[i].resp.receivedMs < oV[best].resp.receivedMs))))
+        best = i;
+    }
+
+    if (oV[best].ok == true)
+      printf("%d %s\n", oV[best].resp.status, oV[best].path);
+    else
+      printf("ERROR %s: %s\n", oV[best].path, (oV[best].error != NULL) ? oV[best].error : "failed");
+    oV[best].path = NULL;
+  }
+
+  corAllocBufferReset(&ka, false);
+  return 0;
+}
+
 static int parallel(CorRestVerb v)
 {
   Parallel  pV[32];
@@ -375,6 +438,9 @@ static int parallel(CorRestVerb v)
     pV[n].index = n;
     n += 1;
   }
+
+  if (sockets == 1)
+    return parallelOneSocket(v, pV, n);
 
   for (int i = 0; i < n; i++)
     pthread_create(&pV[i].tid, NULL, parallelOne, &pV[i]);
