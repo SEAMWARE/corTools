@@ -107,6 +107,7 @@ unsigned short ftPort       = 7701;
 bool           ftFg         = true;
 unsigned short ftPostStatus = 200;     // status returned for accumulate POSTs; override with --status
 unsigned int   ftDelayMs    = 0;       // sleep before responding — for timeout tests
+bool           ftDiscard    = false;   // POSTs counted, not kept - a benchmark's receiver
 //
 // ftMqttSubscribed - set when the MQTT SUBACK arrives, read by GET /mqttReady.
 //
@@ -176,6 +177,7 @@ static CorArg ftArgV[] =
   { "--foreground",      "-fg", CorArgBool,   _vp &ftFg,         CorArgOpt, _vp true, _vp false, _vp true, "run in foreground" },
   { "--status",          "-s",  CorArgUShort, _vp &ftPostStatus, CorArgOpt, _vp 200,   _vp 100, _vp 599, "HTTP status for accumulate POSTs (misbehave mode)" },
   { "--delay",           NULL,  CorArgUInt,   _vp &ftDelayMs,    CorArgOpt, _vp 0, _vp 0, _vp 600000, "sleep N ms before responding (timeout tests)" },
+  { "--discard",         NULL,  CorArgBool,   _vp &ftDiscard,    CorArgOpt, _vp false, _vp false, _vp true, "POSTs counted (GET /count), not kept - a benchmark's notification receiver" },
   { "--mqttPort",        NULL,  CorArgUShort, _vp &ftMqttPort,   CorArgOpt, _vp 0, _vp 0, _vp 65535, "MQTT broker port to subscribe to (0 = disabled)" },
   { "--mqttTopic",       NULL,  CorArgString, _vp &ftMqttTopic,  CorArgOpt, _vp "#",   NULL,  NULL,      "MQTT topic to subscribe (default '#')" },
   { "--mqttUser",        NULL,  CorArgString, _vp &ftMqttUser,   CorArgOpt, NULL,  NULL,  NULL,      "MQTT username (auth-required broker)" },
@@ -1017,6 +1019,20 @@ static bool deleteMockReply(void)
 //
 static bool postAccumulate(void)
 {
+  //
+  // --discard: a benchmark's notification receiver - counted (GET /count), kept nowhere. Accumulating
+  // made the receiver grow with every notification, and a long run measured the receiver.
+  //
+  if (ftDiscard)
+  {
+    pthread_mutex_lock(&dumpMutex);
+    ++dumpCount;
+    pthread_mutex_unlock(&dumpMutex);
+
+    corRest.out.httpStatusCode = ftPostStatus;
+    return true;
+  }
+
   dumpAccumulate();
   COR_T(1, "POST %s received (total: %d, status=%u, delay=%ums)", corRest.in.urlPath, dumpCount, ftPostStatus, ftDelayMs);
 
