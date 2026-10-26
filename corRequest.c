@@ -763,7 +763,7 @@ int main(int argC, char* argV_[])
   if ((corArgsInit("corRequest", argV, "CORREQUEST") != CorArgsOk) || (corArgsParse(argC, argV_) != CorArgsOk))
     return 2;
 
-  if (corLogInit("corRequest", "/tmp", false, NULL, "0-255", corArgsBuiltinVerbose, corArgsBuiltinDebug, false) != 0)
+  if (corLogInit("corRequest", "/tmp", false, NULL, "0-255", corArgsBuiltinVerbose, false) != 0)
     return 2;
 
   headersSplit();
