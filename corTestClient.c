@@ -1498,7 +1498,7 @@ int main(int argC, char* argV[])
     return 1;
   }
 
-  if (corLogInit("corTestClient", "/tmp", false, NULL, ftTraceLevels, corArgsBuiltinVerbose, corArgsBuiltinDebug, false) != 0)
+  if (corLogInit("corTestClient", "/tmp", false, NULL, ftTraceLevels, corArgsBuiltinVerbose, false) != 0)
   {
     fprintf(stderr, "corLogInit failed\n");
     return 1;
