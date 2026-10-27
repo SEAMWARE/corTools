@@ -17,12 +17,7 @@ builds it after every library and installs the tools into `corLibs/bin`, beside 
 
 or on its own, once the libraries are built:
 
-    make di                          # bin/corRequest, bin/corTestClient
+    make di                          # bin/corRequest, bin/corTestClient, bin/corMongoDrop (where libmongoc is)
     make COR_HTTP_SERVER=builtin di  # against a corRest built with the builtin HTTP server
 
 Needs libmicrohttpd (or the builtin server's corHttp), OpenSSL and libmosquitto; libmongoc for `corMongoDrop`, which is skipped without it.
-
-## History
-
-Both came from coraine (`test/funcTests/corRequest`, `test/funcTests/ftClient`), with their history;
-`corTestClient` was called `ftClient` there.
