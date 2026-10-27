@@ -61,15 +61,10 @@ static int     probeCount    = 0;        // sourceIdentity discovery probes seen
 //
 // dumpMutex - guards dumpArray + dumpCount, on every path that touches them.
 //
-// corTestClient is thread-per-connection, so two notifications in flight at once run
-// dumpAccumulate on two threads and spliced into the same tail unguarded: the
-// order of the two entries flipped, and one of them could be lost outright.
-// GET /dump rendered the list while it was being appended to, and DELETE /dump
-// corTreeFree'd it out from under a writer.
-//
-// The mutex existed already - as mqttDumpMutex, taken only by the MQTT
-// listener, which shares this very array with the HTTP path. It was never
-// MQTT's mutex; it guards the accumulator, and it is named for that now.
+// corTestClient is thread-per-connection: two notifications in flight at once run
+// dumpAccumulate on two threads, and GET /dump renders and consumes the list while
+// another thread may be appending to it. The MQTT listener shares the same array
+// with the HTTP path, and takes the same mutex.
 //
 static pthread_mutex_t dumpMutex = PTHREAD_MUTEX_INITIALIZER;
 

@@ -37,7 +37,8 @@
 //     broker WOULD have rendered: its JSON at --pretty spaces per indent (test brokers run with
 //     --pretty-print 2).
 //
-//   exit: 0 a response; 1 no response; 3 the payload is not JSON - a request only HTTP can carry
+//   exit: 0 a response; 1 no response; 2 a usage error (the command line, a --payloadFile that cannot be
+//   read, an http:// URL outside load mode or not GET); 3 the payload is not JSON - a request only HTTP can carry
 //
 #define _GNU_SOURCE                                   // strcasestr
 #include <stdbool.h>                                  // bool
